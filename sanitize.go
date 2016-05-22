@@ -13,17 +13,46 @@ import (
 	parser "golang.org/x/net/html"
 )
 
+const DefaultSeparator = '-'
+
+// Config allows some default properties to be overriden
+type Config struct {
+	// Separator will be used for separating words. By
+	// default this will be '-'
+	Separator Separator
+	// PreserveCase controls whether output filenames and paths
+	// have their case modified. By default names and paths are
+	// changed to lowercase
+	PreserveCase bool
+}
+
+type Separator rune
+
+func (s Separator) String() string {
+	// empty (zero value) rune is 0
+	if s == 0 {
+		s = DefaultSeparator
+	}
+	return string(s)
+}
+
 var (
 	ignoreTags = []string{"title", "script", "style", "iframe", "frame", "frameset", "noframes", "noembed", "embed", "applet", "object", "base"}
 
 	defaultTags = []string{"h1", "h2", "h3", "h4", "h5", "h6", "div", "span", "hr", "p", "br", "b", "i", "strong", "em", "ol", "ul", "li", "a", "img", "pre", "code", "blockquote"}
 
 	defaultAttributes = []string{"id", "class", "src", "href", "title", "alt", "name", "rel"}
+
+	defaultConfig = Config{}
 )
 
 // HTMLAllowing sanitizes html, allowing some tags.
 // Arrays of allowed tags and allowed attributes may optionally be passed as the second and third arguments.
 func HTMLAllowing(s string, args ...[]string) (string, error) {
+	return defaultConfig.HTMLAllowing(s, args...)
+}
+
+func (c *Config) HTMLAllowing(s string, args ...[]string) (string, error) {
 
 	allowedTags := defaultTags
 	if len(args) > 0 {
@@ -56,7 +85,7 @@ func HTMLAllowing(s string, args ...[]string) (string, error) {
 		case parser.StartTagToken:
 
 			if len(ignore) == 0 && includes(allowedTags, token.Data) {
-				token.Attr = cleanAttributes(token.Attr, allowedAttributes)
+				token.Attr = c.cleanAttributes(token.Attr, allowedAttributes)
 				buffer.WriteString(token.String())
 			} else if includes(ignoreTags, token.Data) {
 				ignore = token.Data
@@ -65,7 +94,7 @@ func HTMLAllowing(s string, args ...[]string) (string, error) {
 		case parser.SelfClosingTagToken:
 
 			if len(ignore) == 0 && includes(allowedTags, token.Data) {
-				token.Attr = cleanAttributes(token.Attr, allowedAttributes)
+				token.Attr = c.cleanAttributes(token.Attr, allowedAttributes)
 				buffer.WriteString(token.String())
 			} else if token.Data == ignore {
 				ignore = ""
@@ -165,13 +194,20 @@ var illegalPath = regexp.MustCompile(`[^[:alnum:]\~\-\./]`)
 
 // Path makes a string safe to use as an url path.
 func Path(s string) string {
+	return defaultConfig.Path(s)
+}
+
+func (c *Config) Path(s string) string {
 	// Start with lowercase string
-	filePath := strings.ToLower(s)
+	filePath := s
+	if !c.PreserveCase {
+		filePath = strings.ToLower(s)
+	}
 	filePath = strings.Replace(filePath, "..", "", -1)
 	filePath = path.Clean(filePath)
 
 	// Remove illegal characters for paths, flattening accents and replacing some common separators with -
-	filePath = cleanString(filePath, illegalPath)
+	filePath = c.cleanString(filePath, illegalPath)
 
 	// NB this may be of length 0, caller must check
 	return filePath
@@ -182,12 +218,19 @@ var illegalName = regexp.MustCompile(`[^[:alnum:]-.]`)
 
 // Name makes a string safe to use in a file name by first finding the path basename, then replacing non-ascii characters.
 func Name(s string) string {
+	return defaultConfig.Name(s)
+}
+
+func (c *Config) Name(s string) string {
 	// Start with lowercase string
-	fileName := strings.ToLower(s)
+	fileName := s
+	if !c.PreserveCase {
+		fileName = strings.ToLower(s)
+	}
 	fileName = path.Clean(path.Base(fileName))
 
 	// Remove illegal characters for names, replacing some common separators with -
-	fileName = cleanString(fileName, illegalName)
+	fileName = c.cleanString(fileName, illegalName)
 
 	// NB this may be of length 0, caller must check
 	return fileName
@@ -199,12 +242,16 @@ var baseNameSeparators = regexp.MustCompile(`[./]`)
 // BaseName makes a string safe to use in a file name, producing a sanitized basename replacing . or / with -.
 // No attempt is made to normalise a path or normalise case.
 func BaseName(s string) string {
+	return defaultConfig.BaseName(s)
+}
+
+func (c *Config) BaseName(s string) string {
 
 	// Replace certain joining characters with a dash
 	baseName := baseNameSeparators.ReplaceAllString(s, "-")
 
 	// Remove illegal characters for names, replacing some common separators with -
-	baseName = cleanString(baseName, illegalName)
+	baseName = c.cleanString(baseName, illegalName)
 
 	// NB this may be of length 0, caller must check
 	return baseName
@@ -312,7 +359,7 @@ var (
 )
 
 // cleanAttributes returns an array of attributes after removing malicious ones.
-func cleanAttributes(a []parser.Attribute, allowed []string) []parser.Attribute {
+func (c *Config) cleanAttributes(a []parser.Attribute, allowed []string) []parser.Attribute {
 	if len(a) == 0 {
 		return a
 	}
@@ -321,7 +368,10 @@ func cleanAttributes(a []parser.Attribute, allowed []string) []parser.Attribute 
 	for _, attr := range a {
 		if includes(allowed, attr.Key) {
 
-			val := strings.ToLower(attr.Val)
+			val := attr.Val
+			if !c.PreserveCase {
+				val = strings.ToLower(attr.Val)
+			}
 
 			// Check for illegal attribute values
 			if illegalAttr.FindString(val) != "" {
@@ -353,7 +403,7 @@ var (
 
 // cleanString replaces separators with - and removes characters listed in the regexp provided from string.
 // Accents, spaces, and all characters not in A-Za-z0-9 are replaced.
-func cleanString(s string, r *regexp.Regexp) string {
+func (c *Config) cleanString(s string, r *regexp.Regexp) string {
 
 	// Remove any trailing space to avoid ending on -
 	s = strings.Trim(s, " ")
@@ -362,13 +412,13 @@ func cleanString(s string, r *regexp.Regexp) string {
 	s = Accents(s)
 
 	// Replace certain joining characters with a dash
-	s = separators.ReplaceAllString(s, "-")
+	s = separators.ReplaceAllString(s, string(c.Separator))
 
 	// Remove all other unrecognised characters - NB we do allow any printable characters
 	s = r.ReplaceAllString(s, "")
 
 	// Remove any multiple dashes caused by replacements above
-	s = dashes.ReplaceAllString(s, "-")
+	s = dashes.ReplaceAllString(s, string(c.Separator))
 
 	return s
 }
